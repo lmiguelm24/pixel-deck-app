@@ -25,8 +25,7 @@ export default function Display({ engine, title, trackKey, time, duration, playi
       return [w, h];
     };
 
-    // siempre en la gama ámbar de la app (rojo-anaranjado solo en la punta)
-    const color = (l) => (l > 0.82 ? '#ff6a3a' : l > 0.58 ? '#ffc04a' : '#ffa62b');
+    const color = (l) => (l > 0.82 ? '#f1ca68' : l > 0.58 ? '#80efa6' : '#1ed760');
 
     const draw = () => {
       const L = engine ? engine.levels() : null;
@@ -53,8 +52,8 @@ export default function Display({ engine, title, trackKey, time, duration, playi
           gs.fillStyle = color(1 - y / h);
           gs.fillRect(x, y + 1, bw, seg - 1.5);
         }
-        gs.globalAlpha = 0.12; gs.fillStyle = '#ffa62b'; gs.fillRect(x, h - 2, bw, 2); gs.globalAlpha = 1;
-        if (pk[i] > 2) { gs.fillStyle = '#ffd48a'; gs.fillRect(x, h - pk[i] - 2, bw, 1.5); }
+        gs.globalAlpha = 0.12; gs.fillStyle = '#1ed760'; gs.fillRect(x, h - 2, bw, 2); gs.globalAlpha = 1;
+        if (pk[i] > 2) { gs.fillStyle = '#bcf8d1'; gs.fillRect(x, h - pk[i] - 2, bw, 1.5); }
       }
 
       // VU izquierdo / derecho con retención de pico
@@ -69,13 +68,13 @@ export default function Display({ engine, title, trackKey, time, duration, playi
       const rowH = (vh - 4) / 2, segW = 5, segs = Math.floor((vw - 16) / segW);
       [[vu.l, vu.pl, 'L'], [vu.r, vu.pr, 'R']].forEach(([val, peak, lbl], row) => {
         const y = row * (rowH + 4);
-        gv.fillStyle = '#c7892b'; gv.font = '8px monospace'; gv.fillText(lbl, 0, y + rowH - 1);
+        gv.fillStyle = '#91b39d'; gv.font = '8px monospace'; gv.fillText(lbl, 0, y + rowH - 1);
         const lit = Math.round(val * segs), pkSeg = Math.round(peak * segs);
         for (let s = 0; s < segs; s++) {
           const f = s / segs;
           const on = s < lit || s === pkSeg - 1;
           gv.globalAlpha = on ? 0.95 : 0.1;
-          gv.fillStyle = f > 0.88 ? '#ff4a3a' : f > 0.7 ? '#ffc04a' : '#ffa62b';
+          gv.fillStyle = f > 0.88 ? '#ff8c85' : f > 0.7 ? '#f1ca68' : '#1ed760';
           gv.fillRect(10 + s * segW, y, segW - 1.5, rowH);
         }
         gv.globalAlpha = 1;

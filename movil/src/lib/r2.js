@@ -5,6 +5,7 @@ import { S3RequestPresigner } from '@aws-sdk/s3-request-presigner';
 import { HttpRequest } from '@smithy/protocol-http';
 import { Sha256 } from '@aws-crypto/sha256-js';
 import { CapacitorHttp } from '@capacitor/core';
+import { isImageKey } from './artwork.js';
 
 export const AUDIO_EXT = ['.mp3', '.m4a', '.aac', '.flac', '.wav', '.ogg', '.opus'];
 
@@ -57,7 +58,7 @@ export function makeR2(cfg) {
   // URL temporal (6 h) para reproducir o descargar una canción
   const objectUrl = (key) => presign(`/${bucket}/${encodeKey(key)}`, { 'x-id': 'GetObject', 'x-amz-checksum-mode': 'ENABLED' });
 
-  async function listAll(onPage) {
+  async function listAll(onPage, { includeImages = false } = {}) {
     const items = [];
     let token = null;
     do {
@@ -78,7 +79,9 @@ export function makeR2(cfg) {
         const size = Number(c.getElementsByTagName('Size')[0]?.textContent || 0);
         const base = key.split('/').pop();
         const ext = (base.match(/\.[^.]+$/) || [''])[0].toLowerCase();
-        if (!base.startsWith('.') && AUDIO_EXT.includes(ext)) items.push({ key, size });
+        if (!key.split('/').some((part) => part.startsWith('.')) && (AUDIO_EXT.includes(ext) || (includeImages && isImageKey(key)))) {
+          items.push({ key, size, modified: c.getElementsByTagName('LastModified')[0]?.textContent || '' });
+        }
       }
       const truncated = doc.getElementsByTagName('IsTruncated')[0]?.textContent === 'true';
       token = truncated ? doc.getElementsByTagName('NextContinuationToken')[0]?.textContent : null;

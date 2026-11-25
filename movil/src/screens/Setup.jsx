@@ -1,4 +1,5 @@
 import { useState } from 'react';
+import Logo from '../components/Logo.jsx';
 
 // Conexión con la nube. El endpoint y el bucket vienen escritos; solo faltan las claves.
 export default function Setup({ initial, onSave, onCancel, busy, error }) {
@@ -14,7 +15,7 @@ export default function Setup({ initial, onSave, onCancel, busy, error }) {
 
   return (
     <div className="setup">
-      <div className="brand big">PIXEL<b>DECK</b></div>
+      <Logo large />
       <div className="maker">SOLIDPIXEL · MÓVIL</div>
       <form className="card" onSubmit={submit}>
         <h3>☁ Conectar tu música</h3>

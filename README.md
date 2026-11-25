@@ -34,6 +34,8 @@ Sube tu colección a la nube y escúchala desde un reproductor retro estilo hi-f
 
 ### Android
 
+La versión móvil incorpora Inicio con recomendaciones de tu colección, exploración por géneros, artistas y portadas del bucket. Consulta [cómo organizar fotos y logos y usar el nuevo Inicio](docs/android-discovery.md).
+
 <table>
   <tr>
     <td align="center"><img src="docs/img/android-reproduciendo.png" width="230"><br><b>Reproduciendo</b></td>

@@ -3,6 +3,6 @@
   "appName": "Pixel Deck",
   "webDir": "dist",
   "android": {
-    "backgroundColor": "#101114"
+    "backgroundColor": "#121212"
   }
 }

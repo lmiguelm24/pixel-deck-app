@@ -44,3 +44,24 @@ public class MainActivity extends BridgeActivity {
 }
 `);
 console.log('✔ MainActivity actualizado');
+
+// Iconos propios: vector para Android 7 y adaptativo para Android 8+.
+const res = 'android/app/src/main/res';
+fs.copyFileSync('resources/icon-foreground.xml', `${res}/drawable/pixeldeck_foreground.xml`);
+fs.copyFileSync('resources/icon-legacy.xml', `${res}/drawable/pixeldeck_launcher.xml`);
+fs.writeFileSync(`${res}/values/ic_launcher_background.xml`, `<?xml version="1.0" encoding="utf-8"?>
+<resources><color name="ic_launcher_background">#1ED760</color></resources>
+`);
+fs.mkdirSync(`${res}/mipmap-anydpi-v26`, { recursive: true });
+for (const name of ['ic_launcher', 'ic_launcher_round']) {
+  fs.writeFileSync(`${res}/mipmap-anydpi-v26/${name}.xml`, `<?xml version="1.0" encoding="utf-8"?>
+<adaptive-icon xmlns:android="http://schemas.android.com/apk/res/android">
+    <background android:drawable="@color/ic_launcher_background" />
+    <foreground android:drawable="@drawable/pixeldeck_foreground" />
+    <monochrome android:drawable="@drawable/pixeldeck_foreground" />
+</adaptive-icon>
+`);
+  fs.mkdirSync(`${res}/mipmap-anydpi`, { recursive: true });
+  fs.copyFileSync('resources/icon-legacy.xml', `${res}/mipmap-anydpi/${name}.xml`);
+}
+console.log('✔ Logo e iconos de Pixel Deck aplicados');

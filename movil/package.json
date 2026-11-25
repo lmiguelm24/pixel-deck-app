@@ -6,6 +6,7 @@
   "scripts": {
     "dev": "vite",
     "build": "vite build",
+    "test": "node --test tests/*.test.mjs",
     "preview": "vite preview",
     "android:setup": "npm run build && npx cap add android && node scripts/patch-android.mjs && npx cap sync android",
     "android:apk": "node scripts/build-apk.mjs",
