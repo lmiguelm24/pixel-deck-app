@@ -46,7 +46,7 @@ export function parseId3(buf) {
     if (field && !out[field]) out[field] = decodeText(buf.subarray(start, start + size));
     pos = start + size;
   }
-  if (out.genre) out.genre = out.genre.replace(/^\((\d+)\)$/, '').trim() || null;
+  if (out.genre) out.genre = out.genre.trim() || null;
   if (out.year) out.year = (out.year.match(/\d{4}/) || [null])[0];
-  return out.title || out.artist ? out : null;
+  return Object.values(out).some(Boolean) ? out : null;
 }

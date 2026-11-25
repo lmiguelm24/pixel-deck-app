@@ -34,6 +34,8 @@ Sube tu colección a la nube y escúchala desde un reproductor retro estilo hi-f
 
 ### Android
 
+La versión móvil incorpora Inicio con recomendaciones de tu colección, exploración por géneros, artistas y portadas del bucket. Consulta [cómo organizar fotos y logos y usar el nuevo Inicio](docs/android-discovery.md).
+
 <table>
   <tr>
     <td align="center"><img src="docs/img/android-reproduciendo.png" width="230"><br><b>Reproduciendo</b></td>
@@ -75,7 +77,7 @@ flowchart LR
 
 ## 🚀 Instalación
 
-> Necesitas: una cuenta de Cloudflare, **Node 22+**, y para Android, **Android Studio**.
+> Necesitas: una cuenta de Cloudflare, **Node 22+**, y para Android, **Java 21 y Android SDK** (incluidos en Android Studio).
 
 <details>
 <summary><b>1. Crear tu almacenamiento en Cloudflare R2</b></summary>
@@ -142,16 +144,27 @@ En **☁ NUBE → ⚙ NUBE** pones endpoint, bucket y claves, que se guardan cif
 
 ```bash
 cd movil
-npm install
-npm run android:setup                    # solo la primera vez: crea el proyecto Android y agrega permisos
-cd android && ./gradlew assembleDebug    # APK en android/app/build/outputs/apk/debug/app-debug.apk
+npm ci
+npm run android:apk
 ```
+El comando compila la web, crea el proyecto Android si falta, agrega los permisos, sincroniza los plugins y genera el APK en `movil/android/app/build/outputs/apk/debug/app-debug.apk`. Puedes volver a ejecutarlo después de hacer cambios.
+
+Necesitas **Java 21**, las plataformas **Android SDK 36**, **Build Tools 35.0.0** y las licencias del SDK aceptadas. Configura `ANDROID_HOME` con la ruta de tu SDK si no está detectado. La primera compilación descarga Gradle y las dependencias, así que necesita conexión a Internet.
+
 Pasa el APK al celular (por cable, Drive, WhatsApp…), instálalo, acepta el permiso de notificaciones y escribe endpoint, bucket y tu clave de **solo lectura**.
 
-Para actualizar después de hacer cambios:
+**Compilar desde Android con Termux:** instala Node 22+, OpenJDK 21 y un Android SDK con los componentes anteriores. También necesitas un binario **AAPT2 para ARM compatible con SDK 36**; el AAPT2 del SDK Linux es para x86 y algunas versiones de Termux no pueden leer los recursos de SDK 36. Indica las rutas de tus herramientas:
+
 ```bash
-npm run build && npx cap sync android && cd android && ./gradlew assembleDebug
+export ANDROID_HOME=/ruta/al/android-sdk
+export AAPT2_PATH=/ruta/al/aapt2-compatible
+npm run android:apk
 ```
+
+Se genera un APK **debug**, firmado para instalación directa. La compilación y la firma se verificaron en Termux; la reproducción y el funcionamiento en segundo plano deben probarse en el dispositivo.
+
+Si aparece un error de **CORS** al reproducir, aplica la política del paso 1 al bucket donde está tu música. El origen de la app Android es `https://localhost`.
+
 Si la música se corta con la pantalla apagada: *Ajustes → Apps → Pixel Deck → Batería → Sin restricciones*.
 </details>
 

@@ -1,7 +1,13 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { App as CapApp } from '@capacitor/app';
 import { Network } from '@capacitor/network';
-import Display from './components/Display.jsx';
+import Icon from './components/Icon.jsx';
+import Cover from './components/Cover.jsx';
+import Player from './components/Player.jsx';
+import FavoriteButton from './components/FavoriteButton.jsx';
+import Logo from './components/Logo.jsx';
+import ArtworkProvider from './components/ArtworkProvider.jsx';
+import Home, { GenreGrid } from './screens/Home.jsx';
 import VirtualList from './components/VirtualList.jsx';
 import SoundSheet from './components/SoundSheet.jsx';
 import Setup from './screens/Setup.jsx';
@@ -12,10 +18,15 @@ import { createDownloads } from './lib/downloads.js';
 import { createEngine } from './lib/engine.js';
 import { setNowPlaying, setPlaying as setMediaPlaying, setPosition, bindActions } from './lib/media.js';
 import { tap, thump, tick } from './lib/haptics.js';
-import { fmtTime, fmtSize, norm, labels, displayName, topFolder, parentFolder } from './lib/format.js';
+import { fmtSize, norm, labels, topFolder, parentFolder } from './lib/format.js';
+import { isImageKey } from './lib/artwork.js';
+import { genreOf, artistOf, groupTracks, discover, recordListen } from './lib/discovery.js';
+import { createFavorites } from './lib/favorites.js';
 
-const ROW_H = 58;
+const ROW_H = 72;
 const LIB_FILE = 'library.json';
+const ART_FILE = 'artwork-index.json';
+const cloudScope = (cfg) => `${cfg?.endpoint?.trim() || ''}|${cfg?.bucket?.trim() || ''}`;
 const DEFAULT_EQ = { on: true, bands: [0, 0, 0, 0, 0, 0, 0, 0, 0, 0], preamp: 0, master: 0 };
 const DEFAULT_MIX = { crossfade: 4, party: false };
 
@@ -37,10 +48,24 @@ export default function App() {
   const [setupBusy, setSetupBusy] = useState('');
   const [setupError, setSetupError] = useState('');
   const [library, setLibrary] = useState([]);
+  const [images, setImages] = useState([]);
+  const [listening, setListening] = useState({});
+  const listeningRef = useRef({});
+  const scopeRef = useRef('');
+  const favoriteStore = useMemo(() => createFavorites({ read: getPref, write: setPref }), []);
+  const [favorites, setFavorites] = useState([]);
+  const favoriteKeys = useMemo(() => new Set(favorites), [favorites]);
   const [libVersion, setLibVersion] = useState(0);
   const [tab, setTab] = useState('cloud');
+  const [view, setView] = useState('home');
+  const [playerOpen, setPlayerOpen] = useState(false);
+  const searchRef = useRef(null);
   const [search, setSearch] = useState('');
   const [folder, setFolder] = useState('');
+  const [collection, setCollection] = useState(null);
+  const [sort, setSort] = useState('original');
+  const navigationRef = useRef(null);
+  navigationRef.current = { screen, view, folder, collection, search };
   const [online, setOnline] = useState(true);
   const [toast, setToast] = useState('');
   const [confirm, setConfirm] = useState(null);
@@ -54,13 +79,9 @@ export default function App() {
   const [source, setSource] = useState('');
   const [shuffle, setShuffle] = useState(false);
   const [repeat, setRepeat] = useState('off');
-  const [showRemaining, setShowRemaining] = useState(false);
-  const [seeking, setSeeking] = useState(null);
   const [eq, setEqState] = useState(DEFAULT_EQ);
   const [mix, setMixState] = useState(DEFAULT_MIX);
   const [soundOpen, setSoundOpen] = useState(false);
-  const [compact, setCompact] = useState(false);   // cabecera achicada al bajar en la lista
-  const listEl = useRef(null);
   const [, setUi] = useState(0);
 
   const r2Ref = useRef(null);
@@ -80,6 +101,20 @@ export default function App() {
     clearTimeout(showToast.t);
     showToast.t = setTimeout(() => setToast(''), 2800);
   }, []);
+
+  const toggleFavorite = useCallback(async (key) => {
+    if (!key) return;
+    tap();
+    const scope = scopeRef.current;
+    try {
+      const result = await favoriteStore.toggle(scope, key);
+      if (scope !== scopeRef.current) return;
+      setFavorites(result.keys);
+      showToast(result.added ? 'Añadida a Favoritos' : 'Quitada de Favoritos');
+    } catch {
+      showToast('No se pudieron guardar tus favoritos. Inténtalo de nuevo.');
+    }
+  }, [favoriteStore, showToast]);
 
   // ---------- cola ----------
   const buildItem = useCallback(async (index) => {
@@ -144,6 +179,10 @@ export default function App() {
       setQi(item.index);
       setSource(item.src);
       const t = libMap.current.get(item.key) || item;
+      const nextHistory = recordListen(listeningRef.current, item.key);
+      listeningRef.current = nextHistory;
+      setListening(nextHistory);
+      setPref('listening', { scope: scopeRef.current, history: nextHistory }).catch(() => {});
       const lb = labels({ ...t, key: item.key });
       setNowPlaying({ title: lb.main, artist: t.artist || parentFolder(item.key), album: t.album || topFolder(item.key) });
     },
@@ -215,11 +254,6 @@ export default function App() {
     setUi((n) => (n + 1) % 1e9);
   }, [engine, playFrom]);
 
-  // Achicar la cabecera al bajar por la lista (con margen para que no parpadee)
-  const onScrollPos = useCallback((y) => {
-    setCompact((c) => (c ? y > 8 : y > 80));
-  }, []);
-
   // Controles de la notificación / pantalla de bloqueo
   useEffect(() => {
     bindActions({
@@ -258,9 +292,16 @@ export default function App() {
   // ---------- inicio ----------
   useEffect(() => {
     (async () => {
-      const [savedCfg, settings, lib, savedEq, savedMix] = await Promise.all([
-        getPref('cloud', null), getPref('settings', {}), readJSON(LIB_FILE, []), getPref('eq', DEFAULT_EQ), getPref('mix', DEFAULT_MIX)
+      const [savedCfg, settings, lib, savedEq, savedMix, art, savedListening] = await Promise.all([
+        getPref('cloud', null), getPref('settings', {}), readJSON(LIB_FILE, []), getPref('eq', DEFAULT_EQ), getPref('mix', DEFAULT_MIX), readJSON(ART_FILE, null), getPref('listening', null)
       ]);
+      scopeRef.current = cloudScope(savedCfg);
+      setFavorites(await favoriteStore.load(scopeRef.current));
+      if (art?.scope === scopeRef.current && Array.isArray(art.images)) setImages(art.images);
+      if (savedListening?.scope === scopeRef.current && savedListening.history) {
+        listeningRef.current = savedListening.history;
+        setListening(savedListening.history);
+      }
       setShuffle(!!settings.shuffle);
       setRepeat(settings.repeat || 'off');
       const e = { ...DEFAULT_EQ, ...savedEq }, m = { ...DEFAULT_MIX, ...savedMix };
@@ -287,6 +328,13 @@ export default function App() {
     const netSub = Network.addListener('networkStatusChange', (s) => setOnline(s.connected));
     const backSub = CapApp.addListener('backButton', () => {
       if (document.querySelector('.sheet-wrap.open')) { setSoundOpen(false); return; }
+      if (document.querySelector('.now-playing')) { setPlayerOpen(false); return; }
+      const navigation = navigationRef.current;
+      if (navigation.screen === 'setup' && r2Ref.current) { setScreen('main'); return; }
+      if (navigation.collection || navigation.folder || navigation.search) {
+        setCollection(null); setFolder(''); setSearch(''); return;
+      }
+      if (navigation.view !== 'home') { setView('home'); setTab('cloud'); return; }
       CapApp.minimizeApp().catch(() => {});
     });
     return () => { sub(); netSub.then((x) => x.remove()); backSub.then((x) => x.remove()); };
@@ -299,14 +347,19 @@ export default function App() {
     if (!r2) return;
     if (!quiet) setRefreshing('Leyendo tu biblioteca…');
     try {
-      const items = await r2.listAll((n) => !quiet && setRefreshing(`Leyendo tu biblioteca… ${n}`));
+      const catalog = await r2.listAll((n) => !quiet && setRefreshing(`Leyendo tu biblioteca… ${n} archivos`), { includeImages: true });
+      if (r2 !== r2Ref.current) return;
+      const items = catalog.filter((it) => !isImageKey(it.key));
+      const artwork = catalog.filter((it) => isImageKey(it.key));
+      setImages(artwork);
+      writeJSON(ART_FILE, { scope: scopeRef.current, images: artwork }).catch(() => {});
       const merged = items.map((it) => {
         const old = libMap.current.get(it.key);
-        return old ? { ...old, size: it.size } : { key: it.key, size: it.size };
+        return old ? { ...old, size: it.size, modified: it.modified } : { ...it };
       });
       applyLibrary(merged);
       saveLibrary();
-      if (!quiet) showToast(`${merged.length} canciones en la nube`);
+      if (!quiet) showToast(`${merged.length} canciones · ${artwork.length} imágenes en la nube`);
     } catch (e) {
       if (!quiet) showToast(e.message);
     }
@@ -318,7 +371,9 @@ export default function App() {
     setSetupBusy('Conectando…');
     try {
       const r2 = makeR2(newCfg);
-      const items = await r2.listAll((n) => setSetupBusy(`Conectado. Leyendo canciones… ${n}`));
+      const catalog = await r2.listAll((n) => setSetupBusy(`Conectado. Leyendo archivos… ${n}`), { includeImages: true });
+      const items = catalog.filter((it) => !isImageKey(it.key));
+      const artwork = catalog.filter((it) => isImageKey(it.key));
       if (items.length) {
         setSetupBusy('Revisando permisos de reproducción…');
         const ok = await checkCors(r2, items[0].key);
@@ -330,13 +385,20 @@ export default function App() {
         }
       }
       r2Ref.current = r2;
+      const changed = scopeRef.current !== cloudScope(newCfg);
+      scopeRef.current = cloudScope(newCfg);
+      if (changed) { listeningRef.current = {}; setListening({}); }
+      setFavorites(await favoriteStore.load(scopeRef.current));
+      if (changed) { setTab('cloud'); setFolder(''); setCollection(null); setSearch(''); }
       await setPref('cloud', newCfg);
       setCfg(newCfg);
-      const merged = items.map((it) => ({ ...(libMap.current.get(it.key) || {}), key: it.key, size: it.size }));
+      setImages(artwork);
+      writeJSON(ART_FILE, { scope: scopeRef.current, images: artwork }).catch(() => {});
+      const merged = items.map((it) => ({ ...(!changed && libMap.current.get(it.key) || {}), ...it }));
       applyLibrary(merged);
       saveLibrary();
       setScreen('main');
-      showToast(`¡Listo! ${merged.length} canciones`);
+      showToast(`¡Listo! ${merged.length} canciones · ${artwork.length} imágenes`);
     } catch (e) {
       setSetupError(e.message || 'No se pudo conectar.');
     }
@@ -373,9 +435,17 @@ export default function App() {
       t._q = true;
       metaQueue.current.unshift(t);
     });
-    metaQueue.current = metaQueue.current.slice(0, 60);
+    metaQueue.current.splice(60).forEach((t) => { t._q = false; });
     pumpMeta();
   }, [pumpMeta]);
+
+  // Lee una muestra acotada para que Inicio tenga artistas y géneros aun sin abrir la lista.
+  useEffect(() => {
+    if (screen !== 'main' || !online || !library.length) return;
+    const step = Math.max(1, Math.floor(library.length / 24));
+    const sample = library.filter((_, i) => i % step === 0).slice(0, 24);
+    onVisible(sample);
+  }, [screen, online, library, onVisible]);
 
   // ---------- listas filtradas ----------
   const folders = useMemo(() => {
@@ -385,18 +455,32 @@ export default function App() {
   }, [library]);
 
   const dlKeysCount = dl.keys().length;
+  const favoriteTracks = useMemo(() => {
+    const byKey = new Map(library.map((track) => [track.key, track]));
+    return favorites.map((key) => byKey.get(key)).filter(Boolean);
+  }, [library, favorites]);
+  const homeTracks = useMemo(() => online ? library : library.filter((t) => dl.has(t.key)), [library, online, dl, dlKeysCount]);
+  const discovery = useMemo(() => discover(homeTracks, listening), [homeTracks, listening, libVersion]);
+  const genreGroups = useMemo(() => groupTracks(homeTracks, genreOf), [homeTracks, libVersion]);
+  const artistGroups = useMemo(() => groupTracks(homeTracks, artistOf), [homeTracks, libVersion]);
+  const folderGroups = useMemo(() => groupTracks(homeTracks, (t) => topFolder(t.key)), [homeTracks]);
   const visible = useMemo(() => {
     const words = norm(search).split(' ').filter(Boolean);
-    let base = tab === 'downloads' ? library.filter((t) => dl.has(t.key)) : library;
+    let base = tab === 'favorites' ? favoriteTracks : tab === 'downloads' ? library.filter((t) => dl.has(t.key)) : library;
     if (tab === 'cloud' && folder) base = base.filter((t) => topFolder(t.key) === folder);
-    if (!words.length) return base;
-    return base.filter((t) => {
-      const hay = norm([t.title, t.artist, t.album, t.genre, t.year, t.key].filter(Boolean).join(' '));
+    if (collection?.kind === 'genre') base = base.filter((t) => norm(genreOf(t)) === norm(collection.value));
+    if (collection?.kind === 'artist') base = base.filter((t) => norm(artistOf(t)) === norm(collection.value));
+    if (words.length) base = base.filter((t) => {
+      const hay = norm([t.title, artistOf(t), t.album, genreOf(t), t.year, t.key].filter(Boolean).join(' '));
       return words.every((w) => hay.includes(w));
     });
+    if (sort === 'title') return [...base].sort((a, b) => labels(a).main.localeCompare(labels(b).main, 'es', { numeric: true }));
+    if (sort === 'artist') return [...base].sort((a, b) => artistOf(a).localeCompare(artistOf(b), 'es'));
+    if (sort === 'recent') return [...base].sort((a, b) => (listening[b.key]?.lastPlayed || 0) - (listening[a.key]?.lastPlayed || 0));
+    return base;
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [library, libVersion, search, folder, tab, dlKeysCount]);
-  visibleRef.current = visible;
+  }, [library, libVersion, search, folder, collection, tab, dlKeysCount, sort, listening, favoriteTracks]);
+  visibleRef.current = view === 'home' ? discovery.recommended : visible;
 
   // ---------- descargas ----------
   const dlStatus = dl.status();
@@ -421,7 +505,7 @@ export default function App() {
   }
 
   // ---------- pantalla ----------
-  if (screen === 'loading') return <div className="splash"><div className="brand big pulse">PIXEL<b>DECK</b></div></div>;
+  if (screen === 'loading') return <div className="splash"><Logo large pulse /></div>;
   if (screen === 'setup') {
     return <Setup initial={cfg} busy={setupBusy} error={setupError} onSave={saveCloud} onCancel={cfg ? () => setScreen('main') : null} />;
   }
@@ -429,10 +513,8 @@ export default function App() {
   const es = engine.state();
   const currentKey = es.item ? es.item.key : queue[qi];
   const current = currentKey ? libMap.current.get(currentKey) || { key: currentKey } : null;
-  const pos = seeking != null ? seeking : es.time;
-  const dur = es.duration;
-  const pct = isFinite(dur) && dur > 0 ? (pos / dur) * 100 : 0;
-  const filtered = !!(search || folder);
+  const filtered = !!(search || folder || collection);
+  const browseGenres = view === 'search' && !search && !folder && !collection;
 
   const renderRow = (t, i) => {
     const lb = labels(t);
@@ -442,92 +524,81 @@ export default function App() {
     const cur = dlStatus.current && dlStatus.current.key === t.key ? dlStatus.current.pct : null;
     const dim = !online && !has;
     return (
-      <div className={'row' + (isCur ? ' playing' : '') + (dim ? ' dim' : '')} onClick={() => playFrom(visible, i)}>
-        {isCur && <span className={'eqbars' + (es.playing ? ' on' : '')}><i /><i /><i /></span>}
-        <div className="row-text">
-          <div className="t">{lb.main}</div>
-          <div className="s">{lb.sub}</div>
-        </div>
+      <div className={'row' + (isCur ? ' playing' : '') + (dim ? ' dim' : '')}>
+        <button className="row-play" onClick={() => playFrom(visible, i)} aria-label={`Reproducir ${lb.main}`}>
+        <Cover name={artistOf(t) || topFolder(t.key)} track={t} />
+        <span className="row-text">
+          <span className="t">{lb.main}</span>
+          <span className="s">{lb.sub}</span>
+        </span>
+        {isCur && <span className={'eqbars' + (es.playing ? ' on' : '')} aria-label={es.playing ? 'Reproduciendo' : 'En pausa'}><i /><i /><i /></span>}
+        </button>
+        <FavoriteButton track={t} active={favoriteKeys.has(t.key)} onToggle={toggleFavorite} />
         <button className={'dlbtn' + (has ? ' ok' : '') + (cur != null ? ' busy' : '')} style={cur != null ? { '--pct': cur + '%' } : null}
+          aria-label={has ? `Quitar descarga de ${lb.main}` : `Descargar ${lb.main}`} disabled={pend}
           onClick={(e) => {
             e.stopPropagation();
             tick();
             if (has) askRemove([t]);
             else if (!pend) { if (!online) showToast('Necesitas internet para descargar'); else dl.enqueue([{ key: t.key, size: t.size }]); }
           }}>
-          <span>{has ? '✓' : cur != null ? cur : pend ? '…' : '↓'}</span>
+          <span>{cur != null ? `${cur}%` : pend ? '…' : <Icon name={has ? 'check' : 'download'} size={20} />}</span>
         </button>
       </div>
     );
   };
 
-  const emptyMsg = tab === 'downloads'
-    ? <div className="empty">Aún no tienes canciones descargadas.<br />En ☁ NUBE toca ↓ en una canción, o elige una carpeta y usa “↓ DESCARGAR ESTAS”.</div>
-    : search ? <div className="empty">Sin resultados para “{search}”</div>
-      : <div className="empty">No hay canciones.<br /><button className="pill on" onClick={() => refreshLibrary()}>↻ ACTUALIZAR</button></div>;
+  const emptyMsg = search || folder || collection
+    ? <div className="empty"><Icon name="search" size={32} /><h3>No encontramos canciones</h3><p>Prueba otra búsqueda o quita los filtros.</p><button className="pill" onClick={() => { setSearch(''); setFolder(''); setCollection(null); }}>Quitar filtros</button></div>
+    : tab === 'favorites'
+    ? <div className="empty"><Icon name="heart" size={36} /><h3>Tus canciones favoritas, juntas</h3><p>Toca el corazón de una canción para guardarla aquí.</p><button className="pill on" onClick={() => setTab('cloud')}>Explorar canciones</button></div>
+    : tab === 'downloads'
+    ? <div className="empty"><Icon name="download" size={36} /><h3>Tu música va contigo</h3><p>Descarga canciones desde la pestaña Todas y escúchalas sin conexión.</p><button className="pill on" onClick={() => setTab('cloud')}>Explorar canciones</button></div>
+    : <div className="empty">No hay canciones.<br /><button className="pill on" onClick={() => refreshLibrary()}>↻ ACTUALIZAR</button></div>;
 
   const press = (fn) => () => { tap(); fn(); };
+  const navigate = (next) => {
+    tap(); setView(next); setSearch(''); setFolder(''); setCollection(null);
+    if (next !== 'library') setTab('cloud');
+  };
+  const openCollection = (kind, value) => {
+    tap(); setSearch(''); setTab('cloud'); setView('library');
+    setFolder(kind === 'folder' ? value : '');
+    setCollection(kind === 'folder' ? null : { kind, value });
+  };
+  const openFavorites = () => {
+    navigate('library'); setTab('favorites');
+  };
 
   return (
-    <div className={'app' + (mix.party ? ' party' : '') + (compact ? ' compact' : '')}>
+    <ArtworkProvider images={images} r2={r2Ref.current}>
+    <div className={'app' + (mix.party ? ' party' : '')}>
+      <div className="browse" inert={playerOpen ? true : undefined}>
       <header className="titlebar">
-        <span className="brand">PIXEL<b>DECK</b></span>
-        <span className="maker">SOLIDPIXEL · HI-FI</span>
+        <Logo />
+        <div className="header-actions">{!online && <span className="offline-badge">Sin conexión</span>}<button className="icon-btn" aria-label="Configurar conexión a la nube" onClick={press(() => { setSetupError(''); setScreen('setup'); })}><Icon name="settings" /></button></div>
       </header>
+      <div className="page-heading"><div><span className="eyebrow">{view === 'home' ? 'HECHO PARA TI' : view === 'search' ? 'ENCUENTRA TU RITMO' : collection?.kind === 'artist' ? 'ARTISTA DE TU COLECCIÓN' : collection?.kind === 'genre' ? 'EXPLORANDO GÉNERO' : 'TU COLECCIÓN PERSONAL'}</span><h1>{view === 'home' ? 'Dale play a tu día' : view === 'search' ? 'Buscar y explorar' : collection?.value || folder || 'Tu biblioteca'}</h1></div><button className="icon-btn" aria-label="Abrir ajustes de sonido" onClick={() => setSoundOpen(true)}><Icon name="sound" /></button></div>
+      {(dlStatus.active || refreshing) && <div className="banner" role="status"><span>{refreshing || `Descargando ${Math.min(dlStatus.done + 1, dlStatus.total)} de ${dlStatus.total}` + (dlStatus.current ? ` · ${dlStatus.current.pct}%` : '')}</span>{dlStatus.active && <button className="pill" onClick={press(() => dl.cancel())}>DETENER</button>}</div>}
+      {view === 'home' ? <Home tracks={homeTracks} discovery={discovery} genres={genreGroups} artists={artistGroups} folders={folderGroups} onOpen={openCollection} onPlay={playFrom} onLibrary={() => navigate('library')} onExplore={() => navigate('search')} onRefresh={() => refreshLibrary()} online={online} refreshing={refreshing} favoriteKeys={favoriteKeys} onFavorite={toggleFavorite} onFavorites={openFavorites} /> : <section className="playlist">
+        {view === 'library' ? <div className="tabs" aria-label="Origen de las canciones">
+          <button className={'tab' + (tab === 'cloud' ? ' on' : '')} aria-pressed={tab === 'cloud'} onClick={press(() => setTab('cloud'))}>Todas</button>
+          <button className={'tab' + (tab === 'downloads' ? ' on' : '')} aria-pressed={tab === 'downloads'} onClick={press(() => { setTab('downloads'); setFolder(''); setCollection(null); })}><Icon name="download" size={16} />Descargadas{dlKeysCount ? ` · ${dlKeysCount}` : ''}</button>
+          <button className={'tab' + (tab === 'favorites' ? ' on' : '')} aria-pressed={tab === 'favorites'} onClick={press(() => { setTab('favorites'); setFolder(''); setCollection(null); })}><Icon name="heart" size={16} filled={tab === 'favorites'} />Favoritos{favoriteTracks.length ? ` · ${favoriteTracks.length}` : ''}</button>
+        </div> : null}
 
-      <Display
-        engine={engine}
-        title={current ? `${qi + 1}. ${displayName(current).toUpperCase()}` : ''}
-        trackKey={currentKey}
-        time={pos} duration={dur} playing={es.playing} mixing={es.mixing}
-        source={current ? source : ''} offline={!online} party={mix.party}
-        showRemaining={showRemaining} onToggleTime={() => { tick(); setShowRemaining((v) => !v); }}
-        onExpand={() => { if (compact && listEl.current) { tap(); listEl.current.scrollTo({ top: 0, behavior: 'smooth' }); } }}
-      />
+        {view !== 'home' && <div className="pl-head"><Icon name="search" size={21} />
+          <input ref={searchRef} aria-label="Buscar artista, canción o carpeta" type="search" placeholder="¿Qué quieres escuchar?" value={search} onChange={(e) => setSearch(e.target.value)} />
+          {search && <button className="icon-btn clear" aria-label="Borrar búsqueda" onClick={press(() => { setSearch(''); searchRef.current?.focus(); })}><Icon name="close" size={18} /></button>}
+        </div>}
 
-      <div className="seekrow">
-        <span>{fmtTime(pos)}</span>
-        <input type="range" min="0" max="1000" value={Math.round(pct * 10)} style={{ '--p': pct + '%' }}
-          onChange={(e) => setSeeking((e.target.value / 1000) * (dur || 0))}
-          onPointerUp={(e) => { if (isFinite(dur)) engine.seek((e.target.value / 1000) * dur); setSeeking(null); }}
-          onTouchEnd={(e) => { if (isFinite(dur)) engine.seek((e.target.value / 1000) * dur); setSeeking(null); }} />
-        <span>{fmtTime(dur)}</span>
-      </div>
-
-      <section className="transport">
-        <div className="keys">
-          <button className="key" onClick={press(goPrev)}>⏮</button>
-          <button className={'key play' + (es.playing ? ' active' : '')} onClick={togglePlay}>{es.playing ? '❚❚' : '▶'}</button>
-          <button className="key" onClick={press(() => goNext(false))}>⏭</button>
-        </div>
-        <div className="toggles">
-          <button className={'pill' + (shuffle || mix.party ? ' on' : '')} disabled={mix.party} onClick={press(() => setShuffle((v) => !v))}>ALEAT.</button>
-          <button className={'pill' + (repeat !== 'off' ? ' on' : '')} onClick={press(() => setRepeat((r) => ({ off: 'all', all: 'one', one: 'off' }[r])))}>
-            {{ off: 'REP: NO', all: 'REP: TODO', one: 'REP: UNA' }[repeat]}
-          </button>
-          <button className={'pill' + (eq.on && (eq.bands.some(Boolean) || eq.preamp || eq.master) ? ' on' : '')} onClick={press(() => setSoundOpen(true))}>EQ</button>
-          <button className={'pill fiesta' + (mix.party ? ' on' : '')} onClick={press(() => setMix({ ...mix, party: !mix.party }))}>FIESTA</button>
-        </div>
-      </section>
-
-      <section className="playlist">
-        <div className="tabs">
-          <button className={'tab' + (tab === 'cloud' ? ' on' : '')} onClick={press(() => setTab('cloud'))}>☁ NUBE</button>
-          <button className={'tab' + (tab === 'downloads' ? ' on' : '')} onClick={press(() => setTab('downloads'))}>↓ DESCARGAS{dlKeysCount ? ` (${dlKeysCount})` : ''}</button>
-          <button className="tab cfg" onClick={press(() => { setSetupError(''); setScreen('setup'); })}>⚙</button>
-        </div>
-
-        <div className="pl-head">
-          <input type="search" placeholder="Buscar artista, canción o carpeta" value={search} onChange={(e) => setSearch(e.target.value)} />
-          {search && <button className="clear" onClick={press(() => setSearch(''))}>✕</button>}
-        </div>
-
-        {tab === 'cloud' && (
+        {tab === 'cloud' && !browseGenres && (
           <div className="chips">
-            <button className={'chip' + (!folder ? ' on' : '')} onClick={press(() => setFolder(''))}>TODAS · {library.length}</button>
+            <button className={'chip' + (!folder && !collection ? ' on' : '')} aria-pressed={!folder && !collection} onClick={press(() => { setFolder(''); setCollection(null); })}>Todas · {library.length}</button>
+            {collection && <button className="chip on" onClick={() => setCollection(null)} aria-label={`Quitar filtro ${collection.value}`}>{collection.value} ×</button>}
             {folders.map(([f, n]) => (
-              <button key={f} className={'chip' + (folder === f ? ' on' : '')}
-                onClick={(e) => { tap(); const el = e.currentTarget; setFolder(folder === f ? '' : f); el.scrollIntoView({ behavior: 'smooth', inline: 'center', block: 'nearest' }); }}>{f} · {n}</button>
+              <button key={f} className={'chip' + (folder === f ? ' on' : '')} aria-pressed={folder === f}
+                onClick={(e) => { tap(); const el = e.currentTarget; setCollection(null); setFolder(folder === f ? '' : f); el.scrollIntoView({ behavior: 'smooth', inline: 'center', block: 'nearest' }); }}>{f} · {n}</button>
             ))}
           </div>
         )}
@@ -536,28 +607,29 @@ export default function App() {
           <div className="banner warn">Falta activar CORS en el bucket: la música de la nube podría no sonar. Revisa los pasos en el chat.</div>
         )}
 
-        {(dlStatus.active || refreshing) && (
-          <div className="banner">
-            <span>{refreshing || `Descargando ${Math.min(dlStatus.done + 1, dlStatus.total)} de ${dlStatus.total}` + (dlStatus.current ? ` · ${dlStatus.current.pct}%` : '')}</span>
-            {dlStatus.active && <button className="pill" onClick={press(() => dl.cancel())}>DETENER</button>}
-            {dlStatus.active && <i className="banner-bar" style={{ width: `${dlStatus.total ? ((dlStatus.done + (dlStatus.current ? dlStatus.current.pct / 100 : 0)) / dlStatus.total) * 100 : 0}%` }} />}
-          </div>
-        )}
-
+        {browseGenres ? <div className="explore-scroll"><h2>Explorar todo</h2><p className="explore-hint">Géneros de tus etiquetas y carpetas. Elige uno para ver sus canciones.</p>{genreGroups.length ? <GenreGrid genres={genreGroups} onOpen={openCollection} /> : <div className="empty">{online ? 'Actualiza tu biblioteca para explorar tus géneros.' : 'Descarga música para explorarla sin conexión.'}</div>}</div> : <>
         <div className="pl-bar">
-          <span className="count">{visible.length} {visible.length === 1 ? 'canción' : 'canciones'}</span>
-          {tab === 'cloud' && filtered && visible.length > 0 && <button className="pill" onClick={press(() => askDownload(visible))}>↓ DESCARGAR ESTAS</button>}
-          {tab === 'cloud' && !filtered && <button className="pill" onClick={press(() => refreshLibrary())} disabled={!online}>↻ ACTUALIZAR</button>}
+          <span className="count">{collection?.value || folder || (view === 'search' ? 'Resultados' : tab === 'favorites' ? 'Favoritos' : tab === 'downloads' ? 'Sin conexión' : 'Todas las canciones')} · {visible.length}</span>
+          <label className="sort-label"><span className="sr-only">Ordenar canciones</span><select aria-label="Ordenar canciones" value={sort} onChange={(e) => setSort(e.target.value)}><option value="original">Orden original</option><option value="title">Título</option><option value="artist">Artista</option><option value="recent">Escuchadas</option></select></label>
+          <button className="icon-btn list-play" aria-label="Reproducir esta lista" disabled={!visible.length} onClick={() => playFrom(visible, 0)}><Icon name="play" size={20} /></button>
+          {tab === 'cloud' && filtered && visible.length > 0 && <button className="pill" onClick={press(() => askDownload(visible))} aria-label="Descargar las canciones de esta selección"><Icon name="download" size={16} /></button>}
+          {tab === 'favorites' && visible.length > 0 && <button className="pill" onClick={press(() => askDownload(visible))} disabled={!online} aria-label="Descargar favoritos"><Icon name="download" size={16} /></button>}
+          {tab === 'cloud' && !filtered && <button className="icon-btn" aria-label="Actualizar biblioteca" onClick={press(() => refreshLibrary())} disabled={!online || !!refreshing}><Icon name="refresh" size={20} /></button>}
           {tab === 'downloads' && dlKeysCount > 0 && <>
             <span className="count">{fmtSize(dl.usedBytes())}</span>
             <button className="pill" onClick={press(() => askRemove(visible))}>QUITAR {filtered ? 'ESTAS' : 'TODAS'}</button>
           </>}
         </div>
 
-        <VirtualList items={visible} rowHeight={ROW_H} renderRow={renderRow} onVisible={tab === 'cloud' ? onVisible : null}
-          scrollKey={tab + '|' + folder + '|' + search} empty={emptyMsg} onScrollPos={onScrollPos} listRef={listEl} />
-      </section>
-
+        <VirtualList items={visible} rowHeight={ROW_H} renderRow={renderRow} onVisible={tab !== 'downloads' ? onVisible : null}
+          scrollKey={view + '|' + tab + '|' + folder + '|' + search + '|' + collection?.value + '|' + sort} empty={emptyMsg} />
+        </>}
+      </section>}
+      </div>
+      <Player current={current} state={es} engine={engine} open={playerOpen} onOpen={() => setPlayerOpen(true)} onClose={() => setPlayerOpen(false)} onPlay={togglePlay} onPrev={press(goPrev)} onNext={press(() => goNext(false))} shuffle={shuffle} onShuffle={press(() => setShuffle((v) => !v))} repeat={repeat} onRepeat={press(() => setRepeat((r) => ({ off: 'all', all: 'one', one: 'off' }[r])))} mix={mix} onSound={() => setSoundOpen(true)} source={source} online={online} favorite={favoriteKeys.has(currentKey)} onFavorite={toggleFavorite} />
+      <nav className="bottom-nav" aria-label="Navegación principal" inert={playerOpen ? true : undefined}>
+        {[['home', 'Inicio'], ['search', 'Buscar'], ['library', 'Tu biblioteca']].map(([id, title]) => <button key={id} className={view === id ? 'on' : ''} aria-current={view === id ? 'page' : undefined} onClick={() => navigate(id)}><Icon name={id} /><span>{title}</span></button>)}
+      </nav>
       <SoundSheet open={soundOpen} onClose={() => setSoundOpen(false)} eq={eq} setEq={setEq} mix={mix} setMix={setMix} />
 
       {confirm && (
@@ -574,5 +646,6 @@ export default function App() {
 
       {toast && <div className="toast" key={toast}>{toast}</div>}
     </div>
+    </ArtworkProvider>
   );
 }
