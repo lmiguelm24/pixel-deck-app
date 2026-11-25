@@ -5,14 +5,15 @@ import { useArtwork } from './ArtworkProvider.jsx';
 // Portadas generadas a partir del nombre: no simulan carátulas ni necesitan red.
 export default function Cover({ name = 'Pixel Deck', className = '', track, folder, artist, kind, priority = false }) {
   const artwork = useArtwork();
-  const imageKey = artwork?.find({ track, folder, artist, kind });
+  const direct = track?.source === 'audius';
+  const imageKey = direct ? (kind === 'artist' ? track.artistArtworkUrl : track.artworkUrl) : artwork?.find({ track, folder, artist, kind });
   const [image, setImage] = useState(null);
   const shell = useRef(null);
   useEffect(() => {
     let alive = true;
     setImage(null);
     if (!imageKey) return;
-    const load = () => artwork.url(imageKey).then((url) => { if (alive && url) setImage({ key: imageKey, url }); }).catch(() => {});
+    const load = () => (direct ? Promise.resolve(imageKey) : artwork.url(imageKey)).then((url) => { if (alive && url) setImage({ key: imageKey, url }); }).catch(() => {});
     let observer;
     if (priority || typeof IntersectionObserver === 'undefined') load();
     else {
@@ -20,7 +21,7 @@ export default function Cover({ name = 'Pixel Deck', className = '', track, fold
       observer.observe(shell.current);
     }
     return () => { alive = false; observer?.disconnect(); };
-  }, [imageKey, artwork, priority]);
+  }, [imageKey, artwork, priority, direct]);
   let hash = 0;
   for (const ch of name) hash = (hash * 31 + ch.charCodeAt(0)) | 0;
   const hue = Math.abs(hash) % 360;

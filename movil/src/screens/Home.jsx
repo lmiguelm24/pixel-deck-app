@@ -21,11 +21,12 @@ function TrackShelf({ title, subtitle, tracks, onPlay, favoriteKeys, onFavorite 
   </section>;
 }
 
-export default function Home({ tracks, discovery, genres, artists, folders, onOpen, onPlay, onLibrary, onExplore, onRefresh, online, refreshing, favoriteKeys, onFavorite, onFavorites }) {
-  if (!tracks.length) return <div className="home-scroll"><div className="welcome-empty"><Icon name="music" size={44} /><h2>{online ? 'Tu colección empieza aquí' : 'Tu música, incluso sin señal'}</h2><p>{online ? 'Actualiza tu biblioteca para descubrir tus canciones, géneros y artistas.' : 'Aún no hay canciones descargadas. Cuando tengas conexión, descarga tus favoritas desde Tu biblioteca.'}</p><button className="pill on" onClick={online ? onRefresh : onLibrary} disabled={online && !!refreshing}>{online ? refreshing ? 'Actualizando…' : 'Actualizar biblioteca' : 'Ver biblioteca'}</button></div></div>;
+export default function Home({ tracks, discovery, genres, artists, folders, onOpen, onPlay, onLibrary, onExplore, onRefresh, online, refreshing, favoriteKeys, onFavorite, onFavorites, onAudius }) {
+  if (!tracks.length) return <div className="home-scroll"><div className="welcome-empty"><Icon name="music" size={44} /><h2>{online ? 'Tu colección empieza aquí' : 'Tu música, incluso sin señal'}</h2><p>{online ? 'Explora Audius o conecta tu nube desde los ajustes para escuchar tu propia colección.' : 'Aún no hay canciones descargadas. Cuando tengas conexión, descarga tus favoritas desde Tu biblioteca.'}</p><button className="pill on" onClick={online ? onAudius : onLibrary}>{online ? 'Descubrir en Audius' : 'Ver biblioteca'}</button>{online && <button className="text-btn" onClick={onRefresh} disabled={!!refreshing}>Conectar o actualizar mi nube</button>}</div></div>;
   const quick = discovery.recent.length ? discovery.recent.slice(0, 6) : folders.slice(0, 6);
   return <div className="home-scroll">
     <div className="home-chips"><button className="chip on" aria-pressed="true">Para ti</button><button className="chip" onClick={onExplore}>Géneros</button><button className="chip favorites-shortcut" onClick={onFavorites}><Icon name="heart" size={15} />Favoritos</button><button className="chip" onClick={onLibrary}>Tu colección</button></div>
+    <button className="audius-home-link" onClick={onAudius}><Icon name="audius" size={30} /><span><strong>Descubrir en Audius</strong><small>Tendencias y nuevas voces · Experimental</small></span><Icon name="next" size={20} /></button>
     <div className="quick-grid" aria-label={discovery.recent.length ? 'Escuchado recientemente' : 'Accesos a tus carpetas'}>{quick.map((item) => {
       const track = item.key ? item : item.tracks[0];
       const title = item.key ? labels(item).main : item.name;

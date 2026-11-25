@@ -7,7 +7,7 @@ import { hashKey } from './format.js';
 
 const INDEX = 'downloads.json';
 
-export function createDownloads(getR2) {
+export function createDownloads(getR2, resolveDownload) {
   let index = {};          // key -> { path, size, at }
   let queue = [];          // [{ key, size }]
   let current = null;      // { key, size, pct }
@@ -16,8 +16,8 @@ export function createDownloads(getR2) {
   const listeners = new Set();
   const emit = () => listeners.forEach((fn) => fn());
 
-  const relPath = (key) => {
-    const ext = (key.match(/\.[^./]+$/) || ['.mp3'])[0].toLowerCase();
+  const relPath = (key, extension) => {
+    const ext = /^\.(mp3|m4a|aac|flac|wav|ogg|opus)$/i.test(extension || '') ? extension.toLowerCase() : (key.match(/\.[^./]+$/) || ['.mp3'])[0].toLowerCase();
     return `music/${hashKey(key)}${ext}`;
   };
 
@@ -58,10 +58,15 @@ export function createDownloads(getR2) {
       current = { ...item, pct: 0 };
       emit();
       try {
-        const r2 = getR2();
-        if (!r2) throw new Error('sin nube');
-        const url = await r2.objectUrl(item.key);
-        const path = relPath(item.key);
+        let resource;
+        if (resolveDownload) resource = await resolveDownload(item);
+        else {
+          const r2 = getR2();
+          if (!r2) throw new Error('sin nube');
+          resource = { url: await r2.objectUrl(item.key) };
+        }
+        const { url, extension } = resource;
+        const path = relPath(item.key, extension);
         const { uri } = await Filesystem.getUri({ path, directory: Directory.Data });
         if (progressHandle) await progressHandle.remove();
         progressHandle = await FileTransfer.addListener('progress', (p) => {
@@ -71,7 +76,8 @@ export function createDownloads(getR2) {
           }
         });
         await FileTransfer.downloadFile({ url, path: uri, progress: true, shouldEncodeUrlParams: false, connectTimeout: 20000, readTimeout: 60000 });
-        index[item.key] = { path, size: item.size || 0, at: Date.now() };
+        const stat = await Filesystem.stat({ path, directory: Directory.Data }).catch(() => null);
+        index[item.key] = { path, size: stat?.size || item.size || 0, at: Date.now() };
         save();
         done++;
       } catch {

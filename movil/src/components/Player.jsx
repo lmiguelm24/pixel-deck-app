@@ -45,7 +45,7 @@ export default function Player({ current, state, engine, open, onOpen, onClose, 
     }}>
       <header className="player-heading">
         <button ref={closeRef} className="icon-btn" onClick={onClose} aria-label="Minimizar reproductor"><Icon name="down" /></button>
-        <span><small>REPRODUCIENDO DESDE TU BIBLIOTECA</small><strong>{current ? topFolder(current.key) || 'Todas las canciones' : 'Pixel Deck'}</strong></span>
+        <span><small>{current?.source === 'audius' ? 'DESCUBIERTO EN AUDIUS' : 'REPRODUCIENDO DESDE TU BIBLIOTECA'}</small><strong>{current?.source === 'audius' ? 'Audius' : current ? topFolder(current.key) || 'Todas las canciones' : 'Pixel Deck'}</strong></span>
         <button className="icon-btn" onClick={onSound} aria-label="Ajustes de sonido"><Icon name="sound" /></button>
       </header>
       <Cover name={current ? topFolder(current.key) : 'Pixel Deck'} track={current} className="player-cover" priority />
@@ -64,7 +64,7 @@ export default function Player({ current, state, engine, open, onOpen, onClose, 
         <button className="icon-btn" onClick={onNext} aria-label="Siguiente canción"><Icon name="next" size={30} /></button>
         <button className={'icon-btn repeat-btn' + (repeat !== 'off' ? ' selected' : '')} onClick={onRepeat} aria-label={`Repetir: ${{ off: 'desactivado', all: 'todas', one: 'una' }[repeat]}`}><Icon name="repeat" />{repeat === 'one' && <span>1</span>}</button>
       </div>
-      <div className="player-source"><Icon name={source === 'local' ? 'download' : 'cloud'} size={16} /><span>{!online ? 'Sin conexión' : source === 'local' ? 'Desde tu teléfono' : 'Tu nube privada'}{mix.party ? ' · Modo fiesta' : ''}</span><button className="text-btn" onClick={onSound}>Sonido</button></div>
+      <div className="player-source"><Icon name={source === 'local' ? 'download' : source === 'audius' ? 'audius' : 'cloud'} size={16} /><span>{source === 'local' ? 'Desde tu teléfono' : source === 'audius' ? 'Audius · streaming' : !online ? 'Sin conexión' : 'Tu nube privada'}{mix.party ? ' · Modo fiesta' : ''}</span><button className="text-btn" onClick={onSound}>Sonido</button></div>
       <details className="visualizer"><summary>Visualizador en directo</summary><Display engine={engine} title={lb.main} trackKey={current?.key} time={time} duration={duration} playing={state.playing} mixing={state.mixing} source={source} offline={!online} party={mix.party} /></details>
     </section>}
   </>;

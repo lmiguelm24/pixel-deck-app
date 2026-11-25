@@ -99,6 +99,7 @@ export default function Display({ engine, title, trackKey, time, duration, playi
         <span className="clock" onClick={onToggleTime}>{clock}</span>
         <div className="lamps">
           <span className={'lamp' + (source === 'cloud' ? ' on blue' : '')}>NUBE</span>
+          <span className={'lamp' + (source === 'audius' ? ' on' : '')}>AUDIUS</span>
           <span className={'lamp' + (source === 'local' ? ' on' : '')}>EN EL TELÉFONO</span>
           <span className={'lamp' + (mixing ? ' on green' : '')}>MEZCLANDO</span>
           <span className={'lamp' + (offline ? ' on red' : '')}>SIN SEÑAL</span>

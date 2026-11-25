@@ -96,6 +96,31 @@ h1 { font-size: clamp(24px, 6.7vw, 32px); margin: 6px 0 0; letter-spacing: -.9px
 .tone-0 { background: #97394e; } .tone-1 { background: #246a63; } .tone-2 { background: #7650a3; }
 .tone-3 { background: #9c511b; } .tone-4 { background: #295c9c; } .tone-5 { background: #866527; }
 .home-footnote { display: flex; align-items: center; justify-content: center; gap: 7px; color: #8a9b90; font-size: 9px; padding: 0 20px; text-align: center; }
+.audius-home-link { display: flex; align-items: center; gap: 14px; width: calc(100% - 40px); margin: 0 20px 20px; padding: 16px; border-radius: 10px; text-align: left; background: linear-gradient(110deg, #38295f, #222538); border: 1px solid #ffffff15; }
+.audius-home-link > span { flex: 1; min-width: 0; }
+.audius-home-link strong, .audius-home-link small { display: block; }
+.audius-home-link strong { font-size: 14px; }
+.audius-home-link small { font-size: 10px; color: #c5bddd; margin-top: 5px; }
+.audius-screen { flex: 1; min-height: 0; display: flex; flex-direction: column; }
+.audius-scroll { flex: 1; min-height: 0; overflow-y: auto; padding-bottom: 20px; overscroll-behavior: contain; }
+.audius-intro { padding: 6px 20px 12px; }
+.experimental-tag { color: #c7b9ff; font-size: 8px; letter-spacing: 1.4px; padding: 5px 8px; border-radius: 5px; background: #67509b30; display: inline-block; }
+.audius-intro h2 { margin: 12px 0 8px; font-size: 20px; letter-spacing: -.5px; }
+.audius-intro p, .audius-key p { font-size: 11px; color: var(--muted); line-height: 1.6; }
+.audius-row { display: flex; align-items: center; gap: 4px; padding: 4px 12px 4px 20px; min-height: 88px; }
+.audius-row .row-play { min-height: 76px; height: auto; }
+.audius-row .t, .audius-row .s { display: block; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+.audius-row .t { font-size: 14px; font-weight: 500; }
+.audius-row .s { font-size: 11px; color: var(--muted); margin-top: 5px; }
+.audius-row.playing .t { color: var(--amber); }
+.audius-track-note { display: block; font-size: 9px; color: #b4a4d6; margin-top: 5px; }
+.audius-loading { text-align: center; padding: 20px; font-size: 12px; color: #c7b9ff; }
+.audius-error { margin: 8px 20px; padding: 16px; background: #35282e; border-radius: 8px; font-size: 12px; line-height: 1.6; }
+.audius-more { display: block; margin: 16px auto 24px; }
+.audius-key { margin: 24px 20px 0; background: #ffffff08; padding: 14px; border-radius: 8px; }
+.audius-key summary { font-size: 12px; cursor: pointer; }
+.audius-key form { display: flex; gap: 8px; }
+.audius-key input { width: 100%; flex: 1; min-width: 0; background: #131313; color: white; border: 1px solid #555; border-radius: 5px; padding: 10px; font-size: 12px; }
 .welcome-empty { padding: 30px 28px; text-align: center; color: var(--muted); line-height: 1.7; }
 .welcome-empty > svg { margin: 0 auto 20px; color: var(--amber); }
 .welcome-empty h2 { color: white; }

@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { App as CapApp } from '@capacitor/app';
 import { Network } from '@capacitor/network';
+import { CapacitorHttp } from '@capacitor/core';
 import Icon from './components/Icon.jsx';
 import Cover from './components/Cover.jsx';
 import Player from './components/Player.jsx';
@@ -8,6 +9,7 @@ import FavoriteButton from './components/FavoriteButton.jsx';
 import Logo from './components/Logo.jsx';
 import ArtworkProvider from './components/ArtworkProvider.jsx';
 import Home, { GenreGrid } from './screens/Home.jsx';
+import Audius from './screens/Audius.jsx';
 import VirtualList from './components/VirtualList.jsx';
 import SoundSheet from './components/SoundSheet.jsx';
 import Setup from './screens/Setup.jsx';
@@ -22,10 +24,12 @@ import { fmtSize, norm, labels, topFolder, parentFolder } from './lib/format.js'
 import { isImageKey } from './lib/artwork.js';
 import { genreOf, artistOf, groupTracks, discover, recordListen } from './lib/discovery.js';
 import { createFavorites } from './lib/favorites.js';
+import { AUDIUS_SCOPE, createAudiusClient, isAudiusKey, mergeAudiusCatalog } from './lib/audius.js';
 
 const ROW_H = 72;
 const LIB_FILE = 'library.json';
 const ART_FILE = 'artwork-index.json';
+const AUDIUS_FILE = 'audius-catalog.json';
 const cloudScope = (cfg) => `${cfg?.endpoint?.trim() || ''}|${cfg?.bucket?.trim() || ''}`;
 const DEFAULT_EQ = { on: true, bands: [0, 0, 0, 0, 0, 0, 0, 0, 0, 0], preamp: 0, master: 0 };
 const DEFAULT_MIX = { crossfade: 4, party: false };
@@ -54,7 +58,15 @@ export default function App() {
   const scopeRef = useRef('');
   const favoriteStore = useMemo(() => createFavorites({ read: getPref, write: setPref }), []);
   const [favorites, setFavorites] = useState([]);
-  const favoriteKeys = useMemo(() => new Set(favorites), [favorites]);
+  const [audiusFavorites, setAudiusFavorites] = useState([]);
+  const audiusFavoritesRef = useRef(audiusFavorites);
+  audiusFavoritesRef.current = audiusFavorites;
+  const [audiusApiKey, setAudiusApiKey] = useState('');
+  const [audiusCatalog, setAudiusCatalog] = useState([]);
+  const [audiusQueue, setAudiusQueue] = useState([]);
+  const audiusCatalogRef = useRef([]);
+  const catalogWrites = useRef(Promise.resolve());
+  const favoriteKeys = useMemo(() => new Set([...favorites, ...audiusFavorites]), [favorites, audiusFavorites]);
   const [libVersion, setLibVersion] = useState(0);
   const [tab, setTab] = useState('cloud');
   const [view, setView] = useState('home');
@@ -72,6 +84,8 @@ export default function App() {
   const [, setDlTick] = useState(0);
   const [refreshing, setRefreshing] = useState('');
   const [corsOk, setCorsOk] = useState(true);
+  const [playbackBusy, setPlaybackBusy] = useState('');
+  const playbackRequest = useRef(0);
 
   // ---------- reproductor ----------
   const [queue, setQueue] = useState([]);
@@ -86,7 +100,17 @@ export default function App() {
 
   const r2Ref = useRef(null);
   const libMap = useRef(new Map());
-  const dl = useMemo(() => createDownloads(() => r2Ref.current), []);
+  const audius = useMemo(() => createAudiusClient({ apiKey: audiusApiKey, request: (url) => CapacitorHttp.get({ url, responseType: 'json', shouldEncodeUrlParams: false, connectTimeout: 15000, readTimeout: 20000 }) }), [audiusApiKey]);
+  const audiusRef = useRef(audius);
+  audiusRef.current = audius;
+  const dl = useMemo(() => createDownloads(() => r2Ref.current, async (item) => {
+    if (isAudiusKey(item.key)) {
+      const resolved = await audiusRef.current.download(item.key);
+      return { url: resolved.url, extension: resolved.track.downloadExtension };
+    }
+    if (!r2Ref.current) throw new Error('Configura tu nube para descargar esta canción.');
+    return { url: await r2Ref.current.objectUrl(item.key) };
+  }), []);
   const st = useRef({});
   st.current = { queue, qi, shuffle: shuffle || mix.party, repeat, online, party: mix.party };
   const bag = useRef([]);            // orden aleatorio sin repetir
@@ -102,32 +126,54 @@ export default function App() {
     showToast.t = setTimeout(() => setToast(''), 2800);
   }, []);
 
+  const rememberAudius = useCallback((tracks) => {
+    const protectedKeys = [...audiusFavoritesRef.current, ...dl.keys(), ...st.current.queue];
+    const catalog = mergeAudiusCatalog(audiusCatalogRef.current, tracks, protectedKeys);
+    audiusCatalogRef.current = catalog;
+    setAudiusCatalog(catalog);
+    const catalogKeys = new Set(catalog.map((track) => track.key));
+    for (const key of libMap.current.keys()) if (isAudiusKey(key) && !catalogKeys.has(key)) libMap.current.delete(key);
+    tracks.forEach((track) => libMap.current.set(track.key, track));
+    const write = catalogWrites.current.catch(() => {}).then(() => writeJSON(AUDIUS_FILE, catalog));
+    catalogWrites.current = write;
+    return write;
+  }, [dl]);
+
   const toggleFavorite = useCallback(async (key) => {
     if (!key) return;
     tap();
-    const scope = scopeRef.current;
+    const remote = isAudiusKey(key);
+    const scope = remote ? AUDIUS_SCOPE : scopeRef.current;
     try {
+      if (remote) await rememberAudius([]);
       const result = await favoriteStore.toggle(scope, key);
-      if (scope !== scopeRef.current) return;
-      setFavorites(result.keys);
+      if (!remote && scope !== scopeRef.current) return;
+      if (remote) setAudiusFavorites(result.keys);
+      else setFavorites(result.keys);
       showToast(result.added ? 'Añadida a Favoritos' : 'Quitada de Favoritos');
     } catch {
       showToast('No se pudieron guardar tus favoritos. Inténtalo de nuevo.');
     }
-  }, [favoriteStore, showToast]);
+  }, [favoriteStore, showToast, rememberAudius]);
 
   // ---------- cola ----------
   const buildItem = useCallback(async (index) => {
     const { queue: q, online: on } = st.current;
     const key = q[index];
     if (!key) return null;
-    const t = libMap.current.get(key) || { key };
+    let t = libMap.current.get(key) || { key };
     let url = null, src = '';
     if (dl.has(key)) { url = await dl.playableUrl(key); src = 'local'; }
+    else if (on && isAudiusKey(key)) {
+      const resolved = await audiusRef.current.stream(key);
+      await rememberAudius([resolved.track]);
+      t = resolved.track;
+      url = resolved.url; src = 'audius';
+    }
     else if (on && r2Ref.current) { url = await r2Ref.current.objectUrl(key); src = 'cloud'; }
     if (!url) return null;
     return { key, index, url, src, title: t.title, artist: t.artist, album: t.album };
-  }, [dl]);
+  }, [dl, rememberAudius]);
 
   const refillBag = (len, exclude) => {
     const a = [];
@@ -159,7 +205,9 @@ export default function App() {
     for (let tries = 0; tries < Math.min(len, 200); tries++) {
       idx = pickNext(idx, auto);
       if (idx == null) return null;
-      const item = await buildItem(idx);
+      let item;
+      try { item = await buildItem(idx); }
+      catch { if (auto && st.current.repeat === 'one') return null; continue; }
       if (item) return item;
       if (auto && st.current.repeat === 'one') return null;
     }
@@ -169,10 +217,9 @@ export default function App() {
   // ---------- motor de audio ----------
   const engine = useMemo(() => createEngine({
     getNext: async () => {
-      const item = await nextPlayableRef.current(st.current.qi, true);
-      pending.current = item ? item.index : null;
-      return item;
+      return nextPlayableRef.current(st.current.qi, true);
     },
+    onNextReady: (item) => { pending.current = item ? item.index : null; },
     onTrackStart: (item) => {
       if (st.current.qi >= 0 && st.current.qi !== item.index) history.current.push(st.current.qi);
       pending.current = null;
@@ -209,6 +256,7 @@ export default function App() {
 
   const playFrom = useCallback(async (list, index) => {
     tap();
+    const request = ++playbackRequest.current;
     const q = list.map((t) => t.key);
     st.current.queue = q;                 // disponible de inmediato para buildItem
     setQueue(q);
@@ -216,17 +264,28 @@ export default function App() {
     history.current = [];
     pending.current = null;
     engine.resetNext();
-    let item = await buildItem(index);
-    if (!item) item = await nextPlayable(index, false);
-    if (!item) { showToast('Sin señal: esa canción no está descargada'); return; }
-    engine.playNow(item, st.current.party ? 1.5 : 0.6);
-  }, [buildItem, engine, nextPlayable, showToast]);
+    setPlaybackBusy(isAudiusKey(q[index]) && !dl.has(q[index]) ? 'Preparando canción de Audius…' : '');
+    try {
+      let item = await buildItem(index);
+      if (!item) item = await nextPlayable(index, false);
+      if (request !== playbackRequest.current) return;
+      if (!item) { showToast('Sin señal: esa canción no está descargada'); return; }
+      engine.playNow(item, st.current.party ? 1.5 : 0.6);
+    } catch (error) {
+      if (request === playbackRequest.current) showToast(error.message || 'No se pudo reproducir esta canción.');
+    } finally { if (request === playbackRequest.current) setPlaybackBusy(''); }
+  }, [buildItem, engine, nextPlayable, showToast, dl]);
 
   const goNext = useCallback(async (auto = false, fromIndex) => {
+    const request = ++playbackRequest.current;
     const from = fromIndex ?? st.current.qi;
     let item = null;
-    if (!auto && pending.current != null) item = await buildItem(pending.current);
+    if (!auto && pending.current != null) {
+      try { item = await buildItem(pending.current); } catch { /* busca otra canción disponible */ }
+    }
     if (!item) item = await nextPlayable(from, auto);
+    if (request !== playbackRequest.current) return;
+    setPlaybackBusy('');
     engine.resetNext();
     pending.current = null;
     if (!item) { if (!auto) showToast('No hay más canciones en la lista'); return; }
@@ -241,10 +300,15 @@ export default function App() {
     const { queue: q, qi: i, shuffle: sh } = st.current;
     if (!q.length) return;
     const idx = sh && history.current.length ? history.current.pop() : i <= 0 ? q.length - 1 : i - 1;
-    const item = await buildItem(idx);
-    if (!item) { showToast('Sin señal: esa canción no está descargada'); return; }
-    engine.resetNext();
-    engine.playNow(item, 0.4);
+    const request = ++playbackRequest.current;
+    try {
+      const item = await buildItem(idx);
+      if (request !== playbackRequest.current) return;
+      setPlaybackBusy('');
+      if (!item) { showToast('Sin señal: esa canción no está descargada'); return; }
+      engine.resetNext();
+      engine.playNow(item, 0.4);
+    } catch (error) { if (request === playbackRequest.current) { setPlaybackBusy(''); showToast(error.message); } }
   }, [buildItem, engine, showToast]);
 
   const visibleRef = useRef([]);
@@ -282,19 +346,24 @@ export default function App() {
   const saveLibTimer = useRef(null);
   const saveLibrary = useCallback(() => {
     clearTimeout(saveLibTimer.current);
-    saveLibTimer.current = setTimeout(() => writeJSON(LIB_FILE, [...libMap.current.values()].map(({ _q, ...t }) => t)).catch(() => {}), 1500);
+    saveLibTimer.current = setTimeout(() => writeJSON(LIB_FILE, [...libMap.current.values()].filter((track) => !isAudiusKey(track.key)).map(({ _q, ...t }) => t)).catch(() => {}), 1500);
   }, []);
   const applyLibrary = useCallback((items) => {
-    libMap.current = new Map(items.map((t) => [t.key, t]));
-    setLibrary(items);
+    const cloudItems = items.filter((track) => !isAudiusKey(track.key));
+    libMap.current = new Map([...audiusCatalogRef.current, ...cloudItems].map((t) => [t.key, t]));
+    setLibrary(cloudItems);
   }, []);
 
   // ---------- inicio ----------
   useEffect(() => {
     (async () => {
-      const [savedCfg, settings, lib, savedEq, savedMix, art, savedListening] = await Promise.all([
-        getPref('cloud', null), getPref('settings', {}), readJSON(LIB_FILE, []), getPref('eq', DEFAULT_EQ), getPref('mix', DEFAULT_MIX), readJSON(ART_FILE, null), getPref('listening', null)
+      const [savedCfg, settings, lib, savedEq, savedMix, art, savedListening, savedAudius, savedApiKey, remoteFavorites] = await Promise.all([
+        getPref('cloud', null), getPref('settings', {}), readJSON(LIB_FILE, []), getPref('eq', DEFAULT_EQ), getPref('mix', DEFAULT_MIX), readJSON(ART_FILE, null), getPref('listening', null), readJSON(AUDIUS_FILE, []), getPref('audius-api-key', ''), favoriteStore.load(AUDIUS_SCOPE)
       ]);
+      await dl.load();
+      const catalog = mergeAudiusCatalog([], Array.isArray(savedAudius) ? savedAudius : [], [...remoteFavorites, ...dl.keys()]);
+      audiusCatalogRef.current = catalog;
+      setAudiusCatalog(catalog); setAudiusApiKey(typeof savedApiKey === 'string' ? savedApiKey : ''); setAudiusFavorites(remoteFavorites);
       scopeRef.current = cloudScope(savedCfg);
       setFavorites(await favoriteStore.load(scopeRef.current));
       if (art?.scope === scopeRef.current && Array.isArray(art.images)) setImages(art.images);
@@ -308,7 +377,6 @@ export default function App() {
       setEqState(e); engine.setEq(e);
       setMixState(m); engine.setSettings(m);
       applyLibrary(Array.isArray(lib) ? lib : []);
-      await dl.load();
       const net = await Network.getStatus().catch(() => ({ connected: true }));
       setOnline(net.connected);
       if (savedCfg) {
@@ -321,10 +389,16 @@ export default function App() {
           if (first) checkCors(r2Ref.current, first.key).then(setCorsOk);
         }
       } else {
-        setScreen('setup');
+        setScreen('main'); setView('audius');
       }
     })();
-    const sub = dl.subscribe(() => setDlTick((n) => n + 1));
+    let previousFailures = 0;
+    const sub = dl.subscribe(() => {
+      setDlTick((n) => n + 1);
+      const failures = dl.status().failed || 0;
+      if (failures > previousFailures) showToast('No se pudo completar una descarga. Revisa la conexión y los permisos de la canción.');
+      previousFailures = failures;
+    });
     const netSub = Network.addListener('networkStatusChange', (s) => setOnline(s.connected));
     const backSub = CapApp.addListener('backButton', () => {
       if (document.querySelector('.sheet-wrap.open')) { setSoundOpen(false); return; }
@@ -344,7 +418,7 @@ export default function App() {
   // ---------- biblioteca en la nube ----------
   async function refreshLibrary(quiet = false) {
     const r2 = r2Ref.current;
-    if (!r2) return;
+    if (!r2) { setSetupError(''); setScreen('setup'); return; }
     if (!quiet) setRefreshing('Leyendo tu biblioteca…');
     try {
       const catalog = await r2.listAll((n) => !quiet && setRefreshing(`Leyendo tu biblioteca… ${n} archivos`), { includeImages: true });
@@ -455,10 +529,11 @@ export default function App() {
   }, [library]);
 
   const dlKeysCount = dl.keys().length;
+  const allTracks = useMemo(() => [...library, ...audiusCatalog], [library, audiusCatalog]);
   const favoriteTracks = useMemo(() => {
-    const byKey = new Map(library.map((track) => [track.key, track]));
-    return favorites.map((key) => byKey.get(key)).filter(Boolean);
-  }, [library, favorites]);
+    const byKey = new Map(allTracks.map((track) => [track.key, track]));
+    return [...audiusFavorites, ...favorites].map((key) => byKey.get(key)).filter(Boolean);
+  }, [allTracks, favorites, audiusFavorites]);
   const homeTracks = useMemo(() => online ? library : library.filter((t) => dl.has(t.key)), [library, online, dl, dlKeysCount]);
   const discovery = useMemo(() => discover(homeTracks, listening), [homeTracks, listening, libVersion]);
   const genreGroups = useMemo(() => groupTracks(homeTracks, genreOf), [homeTracks, libVersion]);
@@ -466,7 +541,7 @@ export default function App() {
   const folderGroups = useMemo(() => groupTracks(homeTracks, (t) => topFolder(t.key)), [homeTracks]);
   const visible = useMemo(() => {
     const words = norm(search).split(' ').filter(Boolean);
-    let base = tab === 'favorites' ? favoriteTracks : tab === 'downloads' ? library.filter((t) => dl.has(t.key)) : library;
+    let base = tab === 'favorites' ? favoriteTracks : tab === 'downloads' ? allTracks.filter((t) => dl.has(t.key)) : library;
     if (tab === 'cloud' && folder) base = base.filter((t) => topFolder(t.key) === folder);
     if (collection?.kind === 'genre') base = base.filter((t) => norm(genreOf(t)) === norm(collection.value));
     if (collection?.kind === 'artist') base = base.filter((t) => norm(artistOf(t)) === norm(collection.value));
@@ -479,17 +554,19 @@ export default function App() {
     if (sort === 'recent') return [...base].sort((a, b) => (listening[b.key]?.lastPlayed || 0) - (listening[a.key]?.lastPlayed || 0));
     return base;
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [library, libVersion, search, folder, collection, tab, dlKeysCount, sort, listening, favoriteTracks]);
-  visibleRef.current = view === 'home' ? discovery.recommended : visible;
+  }, [library, libVersion, search, folder, collection, tab, dlKeysCount, sort, listening, favoriteTracks, allTracks]);
+  visibleRef.current = view === 'audius' ? audiusQueue : view === 'home' ? discovery.recommended : visible;
 
   // ---------- descargas ----------
   const dlStatus = dl.status();
   function askDownload(items) {
-    const todo = items.filter((t) => !dl.has(t.key));
+    const todo = items.filter((t) => !dl.has(t.key) && (!isAudiusKey(t.key) || t.downloadable));
+    if (!online) { showToast('Necesitas conexión para descargar música.'); return; }
+    if (!todo.length && items.some((t) => isAudiusKey(t.key) && !t.downloadable && !dl.has(t.key))) { showToast('El artista no permite descargar estas canciones.'); return; }
     if (!todo.length) { showToast('Ya están todas descargadas'); return; }
     const bytes = todo.reduce((s, t) => s + (t.size || 0), 0);
     setConfirm({
-      text: `¿Descargar ${todo.length} ${todo.length === 1 ? 'canción' : 'canciones'} (${fmtSize(bytes)}) a este teléfono?\nTe recomiendo hacerlo con WiFi.`,
+      text: `¿Descargar ${todo.length} ${todo.length === 1 ? 'canción' : 'canciones'} (${todo.some((t) => isAudiusKey(t.key)) ? 'tamaño por determinar' : fmtSize(bytes)}) a este teléfono?\nTe recomiendo hacerlo con WiFi.`,
       ok: 'DESCARGAR',
       action: () => { dl.enqueue(todo.map((t) => ({ key: t.key, size: t.size }))); showToast('Descarga iniciada'); }
     });
@@ -507,7 +584,7 @@ export default function App() {
   // ---------- pantalla ----------
   if (screen === 'loading') return <div className="splash"><Logo large pulse /></div>;
   if (screen === 'setup') {
-    return <Setup initial={cfg} busy={setupBusy} error={setupError} onSave={saveCloud} onCancel={cfg ? () => setScreen('main') : null} />;
+    return <Setup initial={cfg} busy={setupBusy} error={setupError} onSave={saveCloud} onCancel={() => setScreen('main')} />;
   }
 
   const es = engine.state();
@@ -523,24 +600,25 @@ export default function App() {
     const pend = !has && dl.isPending(t.key);
     const cur = dlStatus.current && dlStatus.current.key === t.key ? dlStatus.current.pct : null;
     const dim = !online && !has;
+    const canDownload = !isAudiusKey(t.key) || t.downloadable;
     return (
       <div className={'row' + (isCur ? ' playing' : '') + (dim ? ' dim' : '')}>
         <button className="row-play" onClick={() => playFrom(visible, i)} aria-label={`Reproducir ${lb.main}`}>
         <Cover name={artistOf(t) || topFolder(t.key)} track={t} />
         <span className="row-text">
           <span className="t">{lb.main}</span>
-          <span className="s">{lb.sub}</span>
+          <span className="s">{isAudiusKey(t.key) ? `Audius · ${lb.sub}` : lb.sub}</span>
         </span>
         {isCur && <span className={'eqbars' + (es.playing ? ' on' : '')} aria-label={es.playing ? 'Reproduciendo' : 'En pausa'}><i /><i /><i /></span>}
         </button>
         <FavoriteButton track={t} active={favoriteKeys.has(t.key)} onToggle={toggleFavorite} />
         <button className={'dlbtn' + (has ? ' ok' : '') + (cur != null ? ' busy' : '')} style={cur != null ? { '--pct': cur + '%' } : null}
-          aria-label={has ? `Quitar descarga de ${lb.main}` : `Descargar ${lb.main}`} disabled={pend}
+          aria-label={has ? `Quitar descarga de ${lb.main}` : canDownload ? `Descargar ${lb.main}` : `Descarga no permitida: ${lb.main}`} disabled={pend || (!has && !canDownload)}
           onClick={(e) => {
             e.stopPropagation();
             tick();
             if (has) askRemove([t]);
-            else if (!pend) { if (!online) showToast('Necesitas internet para descargar'); else dl.enqueue([{ key: t.key, size: t.size }]); }
+            else if (!pend) { if (!online) showToast('Necesitas internet para descargar'); else if (isAudiusKey(t.key)) askDownload([t]); else dl.enqueue([{ key: t.key, size: t.size }]); }
           }}>
           <span>{cur != null ? `${cur}%` : pend ? '…' : <Icon name={has ? 'check' : 'download'} size={20} />}</span>
         </button>
@@ -578,9 +656,9 @@ export default function App() {
         <Logo />
         <div className="header-actions">{!online && <span className="offline-badge">Sin conexión</span>}<button className="icon-btn" aria-label="Configurar conexión a la nube" onClick={press(() => { setSetupError(''); setScreen('setup'); })}><Icon name="settings" /></button></div>
       </header>
-      <div className="page-heading"><div><span className="eyebrow">{view === 'home' ? 'HECHO PARA TI' : view === 'search' ? 'ENCUENTRA TU RITMO' : collection?.kind === 'artist' ? 'ARTISTA DE TU COLECCIÓN' : collection?.kind === 'genre' ? 'EXPLORANDO GÉNERO' : 'TU COLECCIÓN PERSONAL'}</span><h1>{view === 'home' ? 'Dale play a tu día' : view === 'search' ? 'Buscar y explorar' : collection?.value || folder || 'Tu biblioteca'}</h1></div><button className="icon-btn" aria-label="Abrir ajustes de sonido" onClick={() => setSoundOpen(true)}><Icon name="sound" /></button></div>
-      {(dlStatus.active || refreshing) && <div className="banner" role="status"><span>{refreshing || `Descargando ${Math.min(dlStatus.done + 1, dlStatus.total)} de ${dlStatus.total}` + (dlStatus.current ? ` · ${dlStatus.current.pct}%` : '')}</span>{dlStatus.active && <button className="pill" onClick={press(() => dl.cancel())}>DETENER</button>}</div>}
-      {view === 'home' ? <Home tracks={homeTracks} discovery={discovery} genres={genreGroups} artists={artistGroups} folders={folderGroups} onOpen={openCollection} onPlay={playFrom} onLibrary={() => navigate('library')} onExplore={() => navigate('search')} onRefresh={() => refreshLibrary()} online={online} refreshing={refreshing} favoriteKeys={favoriteKeys} onFavorite={toggleFavorite} onFavorites={openFavorites} /> : <section className="playlist">
+      <div className="page-heading"><div><span className="eyebrow">{view === 'audius' ? 'CATÁLOGO PÚBLICO · PRUEBAS' : view === 'home' ? 'HECHO PARA TI' : view === 'search' ? 'ENCUENTRA TU RITMO' : collection?.kind === 'artist' ? 'ARTISTA DE TU COLECCIÓN' : collection?.kind === 'genre' ? 'EXPLORANDO GÉNERO' : 'TU COLECCIÓN PERSONAL'}</span><h1>{view === 'audius' ? 'Descubrir en Audius' : view === 'home' ? 'Dale play a tu día' : view === 'search' ? 'Buscar y explorar' : collection?.value || folder || 'Tu biblioteca'}</h1></div><button className="icon-btn" aria-label="Abrir ajustes de sonido" onClick={() => setSoundOpen(true)}><Icon name="sound" /></button></div>
+      {(playbackBusy || dlStatus.active || refreshing) && <div className="banner" role="status"><span>{playbackBusy || refreshing || `Descargando ${Math.min(dlStatus.done + 1, dlStatus.total)} de ${dlStatus.total}` + (dlStatus.current ? ` · ${dlStatus.current.pct}%` : '')}</span>{dlStatus.active && <button className="pill" onClick={press(() => dl.cancel())}>DETENER</button>}</div>}
+      {view === 'audius' ? <Audius client={audius} online={online} onCatalog={rememberAudius} onQueue={setAudiusQueue} onPlay={playFrom} favoriteKeys={favoriteKeys} onFavorite={toggleFavorite} onDownload={askDownload} onRemove={askRemove} downloads={dl} currentKey={currentKey} apiKey={audiusApiKey} onApiKey={async (key) => { if (/^Bearer\s/i.test(key)) throw new Error('Introduce la API Key pública, no el Bearer Token.'); await setPref('audius-api-key', key); setAudiusApiKey(key); showToast('API Key de Audius guardada'); }} /> : view === 'home' ? <Home tracks={homeTracks} discovery={discovery} genres={genreGroups} artists={artistGroups} folders={folderGroups} onOpen={openCollection} onPlay={playFrom} onLibrary={() => navigate('library')} onExplore={() => navigate('search')} onRefresh={() => refreshLibrary()} online={online} refreshing={refreshing} favoriteKeys={favoriteKeys} onFavorite={toggleFavorite} onFavorites={openFavorites} onAudius={() => navigate('audius')} /> : <section className="playlist">
         {view === 'library' ? <div className="tabs" aria-label="Origen de las canciones">
           <button className={'tab' + (tab === 'cloud' ? ' on' : '')} aria-pressed={tab === 'cloud'} onClick={press(() => setTab('cloud'))}>Todas</button>
           <button className={'tab' + (tab === 'downloads' ? ' on' : '')} aria-pressed={tab === 'downloads'} onClick={press(() => { setTab('downloads'); setFolder(''); setCollection(null); })}><Icon name="download" size={16} />Descargadas{dlKeysCount ? ` · ${dlKeysCount}` : ''}</button>
@@ -613,7 +691,7 @@ export default function App() {
           <label className="sort-label"><span className="sr-only">Ordenar canciones</span><select aria-label="Ordenar canciones" value={sort} onChange={(e) => setSort(e.target.value)}><option value="original">Orden original</option><option value="title">Título</option><option value="artist">Artista</option><option value="recent">Escuchadas</option></select></label>
           <button className="icon-btn list-play" aria-label="Reproducir esta lista" disabled={!visible.length} onClick={() => playFrom(visible, 0)}><Icon name="play" size={20} /></button>
           {tab === 'cloud' && filtered && visible.length > 0 && <button className="pill" onClick={press(() => askDownload(visible))} aria-label="Descargar las canciones de esta selección"><Icon name="download" size={16} /></button>}
-          {tab === 'favorites' && visible.length > 0 && <button className="pill" onClick={press(() => askDownload(visible))} disabled={!online} aria-label="Descargar favoritos"><Icon name="download" size={16} /></button>}
+          {tab === 'favorites' && visible.some((t) => !isAudiusKey(t.key) || t.downloadable) && <button className="pill" onClick={press(() => askDownload(visible))} disabled={!online} aria-label="Descargar favoritos"><Icon name="download" size={16} /></button>}
           {tab === 'cloud' && !filtered && <button className="icon-btn" aria-label="Actualizar biblioteca" onClick={press(() => refreshLibrary())} disabled={!online || !!refreshing}><Icon name="refresh" size={20} /></button>}
           {tab === 'downloads' && dlKeysCount > 0 && <>
             <span className="count">{fmtSize(dl.usedBytes())}</span>
@@ -628,7 +706,7 @@ export default function App() {
       </div>
       <Player current={current} state={es} engine={engine} open={playerOpen} onOpen={() => setPlayerOpen(true)} onClose={() => setPlayerOpen(false)} onPlay={togglePlay} onPrev={press(goPrev)} onNext={press(() => goNext(false))} shuffle={shuffle} onShuffle={press(() => setShuffle((v) => !v))} repeat={repeat} onRepeat={press(() => setRepeat((r) => ({ off: 'all', all: 'one', one: 'off' }[r])))} mix={mix} onSound={() => setSoundOpen(true)} source={source} online={online} favorite={favoriteKeys.has(currentKey)} onFavorite={toggleFavorite} />
       <nav className="bottom-nav" aria-label="Navegación principal" inert={playerOpen ? true : undefined}>
-        {[['home', 'Inicio'], ['search', 'Buscar'], ['library', 'Tu biblioteca']].map(([id, title]) => <button key={id} className={view === id ? 'on' : ''} aria-current={view === id ? 'page' : undefined} onClick={() => navigate(id)}><Icon name={id} /><span>{title}</span></button>)}
+        {[['home', 'Inicio'], ['search', 'Buscar'], ['audius', 'Audius'], ['library', 'Tu biblioteca']].map(([id, title]) => <button key={id} className={view === id ? 'on' : ''} aria-current={view === id ? 'page' : undefined} onClick={() => navigate(id)}><Icon name={id} /><span>{title}</span></button>)}
       </nav>
       <SoundSheet open={soundOpen} onClose={() => setSoundOpen(false)} eq={eq} setEq={setEq} mix={mix} setMix={setMix} />
 

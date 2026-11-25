@@ -37,7 +37,8 @@ export function createEngine(h) {
   let active = 0;
   let xf = null;              // mezcla en curso: { from, to, end }
   let next = null;            // { item, deck } precargada, o { none: true }
-  let requesting = false;
+  let requesting = null;
+  let nextRevision = 0;
   let settings = { crossfade: 4, party: false };
   let eq = { on: true, bands: new Array(10).fill(0), preamp: 0, master: 0 };
   let lastEmit = 0;
@@ -140,7 +141,9 @@ export function createEngine(h) {
     if (i !== active) return;
     // sin transición (o canción muy corta): pasar a la siguiente al terminar
     if (next && next.item) { mixTo(next.item, 0.05, false); return; }
+    const revision = nextRevision;
     requestNext().then(() => {
+      if (revision !== nextRevision) return;
       if (next && next.item) mixTo(next.item, 0.05, false);
       else emit(true);
     });
@@ -154,20 +157,28 @@ export function createEngine(h) {
   }
 
   async function requestNext() {
-    requesting = true;
-    try {
-      const item = await h.getNext();
-      if (item) {
-        const o = 1 - active;
-        load(o, item);
-        next = { item, deck: o };
-      } else {
-        next = { none: true };
+    if (requesting) return requesting;
+    const revision = nextRevision;
+    const operation = (async () => {
+      try {
+        const item = await h.getNext();
+        // Una consulta remota puede terminar después de cambiar de canción/cola.
+        if (revision !== nextRevision) return;
+        if (item) {
+          const o = 1 - active;
+          load(o, item);
+          next = { item, deck: o };
+        } else {
+          next = { none: true };
+        }
+        h.onNextReady && h.onNextReady(item);
+      } catch {
+        if (revision === nextRevision) next = null;
       }
-    } catch {
-      next = null;
-    }
-    requesting = false;
+    })();
+    requesting = operation;
+    try { await operation; }
+    finally { if (requesting === operation) requesting = null; }
   }
 
   function load(i, item) {
@@ -220,6 +231,8 @@ export function createEngine(h) {
     xf = wasPlaying && X > 0.1 ? { from: active, to: o, end: performance.now() + X * 1000 } : null;
     if (!xf) stopDeck(active);
     active = o;
+    nextRevision++;
+    requesting = null;
     next = null;
     h.onTrackStart && h.onTrackStart(item);
     emit(true);
@@ -325,8 +338,11 @@ export function createEngine(h) {
     skip(dt) { this.seek(decks[active].el.currentTime + dt); },
     // olvidar la siguiente precargada (cambió la cola, el aleatorio, etc.)
     resetNext() {
+      nextRevision++;
+      requesting = null;
       if (next && next.deck != null && !xf) { const d = decks[next.deck]; d.el.removeAttribute('src'); d.el.load(); d.item = null; }
       next = null;
+      h.onNextReady && h.onNextReady(null);
     },
     setSettings(s) { settings = { ...settings, ...s }; },
     setEq(e) { eq = { ...eq, ...e }; applyEq(); },
